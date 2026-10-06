@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PE 本益比分析</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1c1f24;--card:#fff;--line:#dde1e6;--ac:#e8742a;--g:#1a8a4a;--r:#d33}
+@media(prefers-color-scheme:dark){:root{--bg:#14161a;--fg:#e8eaed;--card:#1f2227;--line:#343a42}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%;touch-action:manipulation}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,"Noto Sans TC",sans-serif;padding:env(safe-area-inset-top) 12px 24px}
+h1{font-size:20px;margin:14px 0 8px}.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin:10px 0;overflow-x:auto}
+input,button{font:inherit;font-size:16px;touch-action:manipulation;padding:9px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
+input{width:100%;min-width:0;min-height:44px;-webkit-appearance:none;appearance:none;-webkit-user-select:text;user-select:text}button{background:var(--ac);color:#fff;border:0;cursor:pointer;min-height:44px}
+.row{display:flex;gap:8px;margin:6px 0}.row>*{flex:1;min-width:0}.tabs button{background:var(--card);color:var(--fg);border:1px solid var(--line)}
+.tabs button.on{background:var(--ac);color:#fff}
+table{border-collapse:collapse;width:100%;text-align:right;font-variant-numeric:tabular-nums}
+th,td{padding:5px 6px;border-bottom:1px solid var(--line);white-space:nowrap}th:first-child,td:first-child{text-align:left}
+.sum td{font-weight:600;background:rgba(232,116,42,.1)}.neg{color:var(--g)}.pos{color:var(--r)}
+.hl{background:#ffeb3b55}.msg{color:var(--r)}small{opacity:.7}.hide{display:none}.w{display:flex;align-items:center;gap:6px;min-width:0}.w input{flex:1;min-width:0}.x{flex:0 0 52px;min-height:44px;padding:6px;background:var(--line);color:var(--fg);font-size:14px}label{display:block;font-size:13px;opacity:.8}
+@media(max-width:420px){.search-row{flex-wrap:wrap}.search-row .w{flex:1 1 100%}.search-row #go{flex:1 1 100%}}
+</style>
+</head>
+<body>
+<h1 id="title">PE 本益比分析</h1>
+<div class="row tabs"><button id="t1" class="on">① 五年統計</button><button id="t2">② 評價試算</button></div>
+
+<div id="p1">
+  <div class="card">
+    <label for="q">股票名稱或代號</label>
+    <div class="row search-row"><div class="w"><input id="q" type="text" inputmode="text" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="例：2330 / 台積電"><button type="button" class="x" data-clear-for="q" aria-label="清除股票名稱或代號">清除</button></div><button type="button" id="go">查詢</button></div>
+    <noscript><div class="msg">此預覽無法執行互動功能，請下載檔案後用 Safari 或 Chrome 開啟。</div></noscript>
+    <div id="stockName" role="status" aria-live="polite"></div>
+    <div id="msg" class="msg"></div>
+  </div>
+  <div class="card" id="out1"><small>資料來源:FinMind 開放資料(免費)。年度為民國年,不含今年。</small></div>
+</div>
+
+<div id="p2" class="hide">
+  <div class="card">
+    <label for="cur">目前股價</label><div class="w"><input id="cur" type="text" inputmode="decimal" autocomplete="off"><button type="button" class="x" data-clear-for="cur" aria-label="清除目前股價">清除</button></div>
+    <label for="feps">預估 EPS(預設為最近一年 EPS,可自行改成法人預估值)</label><div class="w"><input id="feps" type="text" inputmode="decimal" autocomplete="off"><button type="button" class="x" data-clear-for="feps" aria-label="清除預估 EPS">清除</button></div>
+    <label for="nav">淨值(容忍價,每股淨值,自行輸入)</label><div class="w"><input id="nav" type="text" inputmode="decimal" autocomplete="off"><button type="button" class="x" data-clear-for="nav" aria-label="清除淨值">清除</button></div>
+    <div class="row"><button id="calc">計算</button></div>
+  </div>
+  <div class="card" id="out2"></div>
+  <div class="card" id="smile"></div>
+</div>
+
+<script>
+const API='https://api.finmindtrade.com/api/v4/data';
+const $=id=>document.getElementById(id);
+const f=(n,d=2)=>Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+let S=null; // 統計結果
+
+async function fm(ds,id,start){
+  const u=`${API}?dataset=${ds}${id?`&data_id=${id}`:''}${start?`&start_date=${start}`:''}`;
+  const j=await (await fetch(u)).json();
+  if(j.status!==200) throw new Error(j.msg||'API 錯誤');
+  return j.data;
+}
+let stockListPromise=null;
+function stockList(){
+  if(!stockListPromise){
+    stockListPromise=fm('TaiwanStockInfo').then(list=>{
+      if(!Array.isArray(list)||!list.length) throw new Error('股票名單暫時無法取得');
+      return list;
+    }).catch(e=>{stockListPromise=null;throw e;});
+  }
+  return stockListPromise;
+}
+const normalizeQuery=q=>q.trim().replace(/[０-９Ａ-Ｚａ-ｚ]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).toUpperCase();
+async function resolve(q){
+  q=normalizeQuery(q);
+  if(!q) throw new Error('請輸入股票名稱或代號');
+  const list=await stockList();
+  const hit=list.find(x=>x.stock_id===q)||list.find(x=>x.stock_name===q)||
+    (!/^\d{4,6}[A-Z]{0,2}$/.test(q)&&list.find(x=>x.stock_name.includes(q)));
+  if(!hit) throw new Error('找不到此股票名稱或代號');
+  return {id:hit.stock_id,name:hit.stock_name};
+}
+let nameTimer=null,nameRequest=0;
+async function showStockName(){
+  const request=++nameRequest, query=$('q').value;
+  if(!query.trim()){$('stockName').textContent='';return;}
+  $('stockName').textContent='查詢個股名稱中…';
+  try{
+    const s=await resolve(query);
+    if(request!==nameRequest||query!==$('q').value) return;
+    $('stockName').textContent=`${s.id} ${s.name}`;
+  }catch(e){
+    if(request!==nameRequest||query!==$('q').value) return;
+    $('stockName').textContent=e.message+'，可按查詢重試';
+  }
+}
+const avg=a=>a.reduce((x,y)=>x+y,0)/a.length;
+
+async function run(){
+  $('msg').textContent='查詢中…';
+  try{
+    const s=await resolve($('q').value);
+    $('stockName').textContent=`${s.id} ${s.name}`;
+    $('title').textContent=`${s.id} ${s.name}`;
+    const Y=new Date().getFullYear(), start=`${Y-5}-01-01`;
+    const [eps,px]=await Promise.all([fm('TaiwanStockFinancialStatements',s.id,start),fm('TaiwanStockPrice',s.id,start)]);
+    const rows=[];
+    for(let y=Y-5;y<Y;y++){
+      const q=eps.filter(e=>e.type==='EPS'&&e.date.startsWith(y));
+      const p=px.filter(d=>d.date.startsWith(y));
+      if(!q.length||!p.length) continue;
+      const E=q.reduce((a,b)=>a+b.value,0);
+      const hi=Math.max(...p.map(d=>d.max)), lo=Math.min(...p.map(d=>d.min));
+      rows.push({y:y-1911,eps:E,n:q.length,hi,lo,peH:hi/E,peL:lo/E});
+    }
+    if(!rows.length) throw new Error('查無資料');
+    S={id:s.id,name:s.name,rows,
+      avgEps:avg(rows.map(r=>r.eps)),maxEps:Math.max(...rows.map(r=>r.eps)),
+      avgHi:avg(rows.map(r=>r.hi)),avgLo:avg(rows.map(r=>r.lo)),
+      maxP:Math.max(...rows.map(r=>r.hi)),minP:Math.min(...rows.map(r=>r.lo)),
+      avgH:avg(rows.map(r=>r.peH)),avgL:avg(rows.map(r=>r.peL)),
+      maxPE:Math.max(...rows.map(r=>r.peH)),minPE:Math.min(...rows.map(r=>r.peL))};
+    render1(); $('msg').textContent='';
+    $('feps').value=rows[rows.length-1].eps.toFixed(2);
+  }catch(e){$('msg').textContent='⚠ '+e.message+'(若是網路問題,請確認 FinMind 可連線)';}
+}
+function render1(){
+  const r=S.rows;
+  let h=`<table><tr><th>年度</th><th>稅後EPS</th><th>最高價</th><th>最低價</th><th>PE高</th><th>PE低</th></tr>`;
+  r.forEach(x=>h+=`<tr><td>${x.y}${x.n<4?'*':''}</td><td>${f(x.eps)}</td><td>${f(x.hi)}</td><td>${f(x.lo)}</td><td>${f(x.peH,1)}</td><td>${f(x.peL,1)}</td></tr>`);
+  h+=`<tr class="sum"><td>五年均值</td><td>${f(S.avgEps)}</td><td>${f(S.avgHi)}</td><td>${f(S.avgLo)}</td><td>${f(S.avgH,2)}</td><td>${f(S.avgL,2)}</td></tr>
+  <tr class="sum"><td>最大/最小</td><td>${f(S.maxEps)}</td><td>${f(S.maxP)}</td><td>${f(S.minP)}</td><td>${f(S.maxPE,1)}</td><td>${f(S.minPE,1)}</td></tr></table>
+  <small>* 該年度不足 4 季 EPS。股價為未還原價,EPS 為各季加總。</small>`;
+  $('out1').innerHTML=h; $('title').textContent=`${S.id} ${S.name}`;
+}
+
+const PES=[10,11,13,15,17,19,21,23,25,30];
+const ZONE=pe=>pe<11?'淨值區':pe<=15?'低PE':pe<=21?'預期PE':'高PE';
+const REP={13:'低PE均值',19:'中PE均值',25:'高PE均值'};
+const num=id=>parseFloat(($(id).value||'').replace(/,/g,''));
+function calc(){
+  if(!S){alert('請先在①查詢個股');return;}
+  const cur=num('cur'), eps=num('feps'), nav=num('nav');
+  if(!cur||!eps){alert('請輸入目前股價與預估EPS');return;}
+  let h=`<table><tr><th>PE</th><th>價格</th><th>報酬</th><th></th></tr>`;
+  PES.forEach(pe=>{
+    const p=eps*pe, r=(p-cur)/cur*100;
+    h+=`<tr class="${REP[pe]?'hl':''}"><td>${pe}</td><td>${f(p,0)}</td><td class="${r>=0?'pos':'neg'}">${f(r,0)}%</td><td>${REP[pe]||ZONE(pe)}</td></tr>`;
+  });
+  $('out2').innerHTML=h+`</table><small>PE 30 以內分三區:低 11–15、預期 17–21、高 23–30(代表值 13 / 19 / 25)。報酬 = (PE價格 − 目前股價) ÷ 目前股價。目前股價相當於 PE ${f(cur/eps,1)}。歷史參考:五年 PE高均值 ${f(S.avgH,1)}、PE低均值 ${f(S.avgL,1)}。</small>`;
+  drawSmile(eps,nav);
+}
+function drawSmile(eps,nav){
+  const L=[['高PE',25,'23–30',60],['預期PE',19,'17–21',130],['低PE',13,'11–15',200]];
+  let s=`<svg viewBox="0 0 360 300" width="100%"><path d="M70 30 Q180 440 290 30" fill="none" stroke="#e8742a" stroke-width="3"/>`;
+  L.forEach(([n,pe,rg,y])=>{
+    s+=`<line x1="40" x2="320" y1="${y}" y2="${y}" stroke="currentColor" opacity=".6"/>
+    <text x="6" y="${y-6}" font-size="12" fill="currentColor">${n}</text>
+    <text x="354" y="${y-6}" font-size="12" text-anchor="end" fill="currentColor">${rg}</text>
+    <text x="180" y="${y-6}" font-size="12" text-anchor="middle" fill="currentColor">PE=${pe}，價格=${f(pe*eps,0)}元</text>`;});
+  s+=`<text x="180" y="272" font-size="13" text-anchor="middle" fill="currentColor">淨值(容忍價)=${nav?f(nav,0)+'元':'未輸入'}</text></svg>`;
+  $('smile').innerHTML=s;
+}
+document.querySelectorAll('[data-clear-for]').forEach(button=>{
+  button.addEventListener('click',()=>{
+    const input=$(button.dataset.clearFor);
+    input.value='';
+    input.focus();
+    input.dispatchEvent(new Event('input',{bubbles:true}));
+  });
+});
+function onQueryInput(e){
+  clearTimeout(nameTimer);++nameRequest;
+  $('stockName').textContent='';
+  if(e.isComposing) return;
+  if($('q').value.trim()) nameTimer=setTimeout(showStockName,350);
+}
+$('q').addEventListener('input',onQueryInput);
+$('q').addEventListener('compositionstart',()=>{clearTimeout(nameTimer);++nameRequest;});
+$('q').addEventListener('compositionend',onQueryInput);
+$('go').onclick=run; $('q').onkeydown=e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();run();}}; $('calc').onclick=calc;
+$('t1').onclick=()=>tab(1); $('t2').onclick=()=>tab(2);
+function tab(n){$('p1').classList.toggle('hide',n!==1);$('p2').classList.toggle('hide',n!==2);$('t1').classList.toggle('on',n===1);$('t2').classList.toggle('on',n===2);}
+</script>
+</body>
+</html>
